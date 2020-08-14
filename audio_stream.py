@@ -7,6 +7,11 @@ import time
 import io
 import numpy as np
 import cv2
+import librosa
+from torchvision.transforms import ToPILImage
+
+from inference import AudioProcessor
+from config import config
 
 outputBucket = None
 lock = threading.Lock()
@@ -36,14 +41,16 @@ rate = 48000
 RECORD_SECONDS = 5
 
 format = pyaudio.paInt16
-chunk = 1024
+chunk = 4096
 bitsPerSample = 16
 channels = 2
 wav_header = genHeader(rate, bitsPerSample, channels)
 
 stream = audio1.open(format=format, channels=channels,
-    rate=rate, input=True, input_device_index=8,
+    rate=rate, input=True, input_device_index=5,
     frames_per_buffer=chunk)
+
+processor = AudioProcessor(config)
 
 time.sleep(2.0)
 
@@ -62,18 +69,73 @@ def sound():
     #first_run = False
     bucket_size = rate / chunk
 
-    frames = []
+    frames = np.array([])
     while True:
-        data = stream.read(chunk)
-        frames.append(np.fromstring(data,  dtype=np.int16))
+        data = stream.read(chunk, exception_on_overflow=False)
+        frames = np.concatenate((frames, np.fromstring(data,  dtype=np.int16)))
         if total > bucket_size:
             pass
         total += 1
         with lock:
             outputBucket = frames
+            frames = frames[-480000:]
 
-def generate():
-    global outputBucket, lock
+def generate_mel():
+    global outputBucket, lock, rate, processor
+    while True:
+        with lock:
+            if outputBucket is None:
+                continue
+            """
+            S = librosa.core.stft(y=outputBucket[-48000:],
+                                  n_fft=1200,
+                                  win_length=int(0.025 * 48000),
+                                  hop_length=int(0.01 * 48000))
+            S = np.abs(S)
+            mel_basis = librosa.filters.mel(sr=48000,
+                                            n_fft=1200,
+                                            n_mels=80,
+                                            fmin=20,
+                                            fmax=8000)
+            # S = np.log10(np.dot(mel_basis, S))           # log mel spectrogram of utterances
+            # S = librosa.core.power_to_dB(np.dot(mel_basis, S))
+            S = np.dot(mel_basis, S)          # log mel spectrogram of utterances
+            S = np.log10(S)           # log mel spectrogram of utterances
+            S [S < - 40] = - 40
+            S = S*20          # log mel spectrogram of utterances
+            """
+
+            S = librosa.feature.melspectrogram(y=outputBucket[-48000:],sr=rate,
+                n_fft=1200,
+                win_length=int(0.025 * 48000),
+                hop_length=int(0.01 * 48000),
+                n_mels=80,
+                fmin=20,
+                fmax=8000)
+
+            S = librosa.core.power_to_db(S,ref=1.0, top_db=80)
+
+            #output = processor.process(S)
+
+            #img = output
+            #img = np.array(topil(output[0].detach()))
+            plt.imshow(S)
+            plt.savefig("test.jpg")
+            plt.close()
+            img = cv2.imread("test.jpg")
+
+            #encodedImage = buf.read()
+            (flag, encodedImage) = cv2.imencode(".jpg", img)
+
+            if not flag:
+                continue
+            #im.show()
+
+        yield(b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' +
+        bytearray(encodedImage) + b'\r\n')
+
+def generate_vis():
+    global outputBucket, lock, rate, processor
     while True:
         with lock:
             if outputBucket is None:
@@ -83,15 +145,75 @@ def generate():
             #if not flag:
             #continue
 
-            plt.figure()
-            plt.plot(np.mean(outputBucket, axis=1))
+            """
+            S = librosa.feature.melspectrogram(y=outputBucket,sr=rate,
+                n_fft=hp.data.nfft,
+                win_length=int(hp.data.window * sr),
+                hop_length=int(hp.data.hop * sr),
+                n_mels=hp.data.nmels,
+                fmin=20,
+                fmax=8000)
+            """
+
+            # N x 1 x 20 x 80
+
+            # L x C x T x F
+
+            # 1 x 1 x 20 x 80
+
+
+            # 19 * 480
+            # 22000
+            # 11000
+
+            # 80 x L
+            """
+            S = librosa.core.stft(y=outputBucket[-9120:],
+                                  n_fft=1200,
+                                  win_length=int(0.025 * 48000),
+                                  hop_length=int(0.01 * 48000))
+            S = np.abs(S)
+            mel_basis = librosa.filters.mel(sr=48000,
+                                            n_fft=1200,
+                                            n_mels=80,
+                                            fmin=20,
+                                            fmax=8000)
+            # S = np.log10(np.dot(mel_basis, S))           # log mel spectrogram of utterances
+            # S = librosa.core.power_to_dB(np.dot(mel_basis, S))
+            S = np.dot(mel_basis, S)          # log mel spectrogram of utterances
+            S = np.log10(S)           # log mel spectrogram of utterances
+            S [S < - 40] = - 40
+            S = S * 20          # log mel spectrogram of utterances
+
+            # 19 * 480= 9120
+            """
+            S = librosa.feature.melspectrogram(y=outputBucket[-9360:],sr=rate,
+                n_fft=1200,
+                win_length=int(0.025 * 48000),
+                hop_length=int(0.01 * 48000),
+                n_mels=80,
+                fmin=20,
+                fmax=8000)
+
+            S = librosa.core.power_to_db(S,ref=1.0, top_db=80)
+
+            #plt.plot(outputBucket)
+
+            output = processor.process(S)
+
+            img = output
+            #img = np.array(topil(output[0].detach()))
+            """
+            plt.imshow(S)
             plt.savefig("test.jpg")
             plt.close()
             img = cv2.imread("test.jpg")
+            """
             #encodedImage = buf.read()
+            img = cv2.resize(img, (256, 256), interpolation = cv2.INTER_AREA)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
             (flag, encodedImage) = cv2.imencode(".jpg", img)
 
-            #im = Image.open(buf)
             if not flag:
                 continue
             #im.show()
@@ -99,10 +221,23 @@ def generate():
         yield(b'--frame\r\n' b'Content-Type: image/jpeg\r\n\r\n' +
         bytearray(encodedImage) + b'\r\n')
 
-@app.route('/audio_feed')
-def audio_feed():
 
-	return Response(generate(),
+#@app.route('/audio_feed')
+#def audio_feed():
+
+#	return Response(generate_audio(),
+#		mimetype = "multipart/x-mixed-replace; boundary=frame")
+
+@app.route('/mel_feed')
+def mel_feed():
+
+	return Response(generate_mel(),
+		mimetype = "multipart/x-mixed-replace; boundary=frame")
+
+@app.route('/vis_feed')
+def vis_feed():
+
+	return Response(generate_vis(),
 		mimetype = "multipart/x-mixed-replace; boundary=frame")
 
 #if __name__ == "__main__":
